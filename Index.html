@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chord Pad</title>
+<style>
+:root{--bg:#f3f1ec;--fg:#1c1b19;--pad:#fff;--bd:#d2cdc1;--ac:#2f6f5e;--acfg:#fff;--mut:#6b675e;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15181c;--fg:#ecebe6;--pad:#232830;--bd:#363d48;--ac:#5fb59c;--acfg:#10201b;--mut:#9aa0a8}}
+:root[data-theme="dark"]{--bg:#15181c;--fg:#ecebe6;--pad:#232830;--bd:#363d48;--ac:#5fb59c;--acfg:#10201b;--mut:#9aa0a8}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Helvetica Neue",sans-serif}
+main{max-width:520px;margin:0 auto;padding:14px 14px 24px}
+.keys{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+.opt{height:42px;border:1.5px solid var(--bd);border-radius:10px;background:var(--pad);color:var(--fg);font:inherit;font-size:16px;touch-action:manipulation}
+.opt.sel{background:var(--ac);color:var(--acfg);border-color:var(--ac)}
+.mode{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0 12px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button.pad{height:min(17vh,120px);min-height:88px;border:1.5px solid var(--bd);border-radius:14px;background:var(--pad);color:var(--fg);display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;padding:10px 14px;font:inherit;touch-action:manipulation;user-select:none}
+button.pad .n{font-size:30px;font-weight:700}
+button.pad .d{font-size:13px;color:var(--mut)}
+button.pad.tonic{border-color:var(--ac)}
+button.pad:active,button.pad.on{background:var(--ac);color:var(--acfg);border-color:var(--ac)}
+button.pad:active .d,button.pad.on .d{color:var(--acfg)}
+.info{margin-top:12px;padding:12px 14px;border:1.5px solid var(--bd);border-radius:14px}
+.info b{display:block;font-size:13px;color:var(--mut);font-weight:500;margin-bottom:4px}
+#notes{font-size:20px;font-weight:600}
+</style></head><body><main>
+<div class="keys" id="keys"></div>
+<div class="mode" id="mode"></div>
+<div class="grid" id="grid"></div>
+<div class="info"><b>Notes (low to high)</b><div id="notes">Tap a chord</div></div>
+</main>
+<script>
+// Pitch class names (flats only)
+const NM=['C','D♭','D','E♭','E','F','G♭','G','A♭','A','B♭','B'];
+const SCALES={Major:[0,2,4,5,7,9,11],Minor:[0,2,3,5,7,8,10]};
+const ROMAN=['I','II','III','IV','V','VI','VII'];
+const noteName=m=>NM[m%12]+(Math.floor(m/12)-1);
+let key=5,mode='Major',ctx=null,cur=[];
+// Build 7 diatonic triads; voicing is fixed: root position, roots ascend from the tonic
+function chords(){
+  const sc=SCALES[mode],s=sc.concat(sc.map(x=>x+12)),base=48+key;
+  return sc.map((_,d)=>{
+    const r=s[d],t=s[d+2]-r,f=s[d+4]-r;
+    let q='',rn=ROMAN[d];
+    if(t===3&&f===7){q='m';rn=rn.toLowerCase()}
+    else if(t===3&&f===6){q='dim';rn=rn.toLowerCase()+'°'}
+    else if(t===4&&f===8){q='aug';rn+='+'}
+    return{n:NM[(base+r)%12]+q,d:rn,m:[base+r,base+s[d+2],base+s[d+4]]};
+  });
+}
+function tone(m,t){
+  const f=440*Math.pow(2,(m-69)/12),g=ctx.createGain();g.connect(ctx.destination);
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.2,t+.01);g.gain.exponentialRampToValueAtTime(.0001,t+2.4);
+  [[1,1],[2,.35],[3,.12]].forEach(([h,a])=>{const o=ctx.createOscillator(),q=ctx.createGain();o.frequency.value=f*h;q.gain.value=a;o.connect(q);q.connect(g);o.start(t);o.stop(t+2.5)});
+  return g;
+}
+function play(c,el){
+  if(!ctx)ctx=new(window.AudioContext||window.webkitAudioContext)();
+  if(ctx.state!=='running')ctx.resume();
+  const now=ctx.currentTime;
+  cur.forEach(g=>{try{g.gain.cancelScheduledValues(now);g.gain.setValueAtTime(g.gain.value,now);g.gain.linearRampToValueAtTime(0,now+.12)}catch(e){}});
+  cur=c.m.map(m=>tone(m,now));
+  document.getElementById('notes').textContent=c.n+': '+c.m.map(noteName).join(' – ');
+  document.querySelectorAll('.pad').forEach(b=>b.classList.remove('on'));el.classList.add('on');
+}
+function render(){
+  document.querySelectorAll('#keys .opt').forEach((b,i)=>b.classList.toggle('sel',i===key));
+  document.querySelectorAll('#mode .opt').forEach(b=>b.classList.toggle('sel',b.textContent===mode));
+  const grid=document.getElementById('grid');grid.innerHTML='';
+  chords().forEach((c,i)=>{
+    const b=document.createElement('button');b.className='pad'+(i===0?' tonic':'');
+    b.innerHTML='<span class="n">'+c.n+'</span><span class="d">'+c.d+'</span>';
+    b.addEventListener('pointerdown',e=>{e.preventDefault();play(c,b)});grid.appendChild(b);
+  });
+  document.getElementById('notes').textContent='Tap a chord';
+}
+NM.forEach((n,i)=>{const b=document.createElement('button');b.className='opt';b.textContent=n;b.onclick=()=>{key=i;render()};document.getElementById('keys').appendChild(b)});
+['Major','Minor'].forEach(m=>{const b=document.createElement('button');b.className='opt';b.textContent=m;b.onclick=()=>{mode=m;render()};document.getElementById('mode').appendChild(b)});
+render();
+</script></body></html>
