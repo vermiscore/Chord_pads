@@ -8,49 +8,100 @@
 :root[data-theme="dark"]{--bg:#15181c;--fg:#ecebe6;--pad:#232830;--bd:#363d48;--ac:#5fb59c;--acfg:#10201b;--mut:#9aa0a8}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Helvetica Neue",sans-serif}
-main{max-width:520px;margin:0 auto;padding:14px 14px 24px}
-.keys{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
-.opt{height:42px;border:1.5px solid var(--bd);border-radius:10px;background:var(--pad);color:var(--fg);font:inherit;font-size:16px;touch-action:manipulation}
+main{max-width:560px;margin:0 auto;padding:10px 8px 24px}
+.keys{display:grid;grid-template-columns:repeat(6,1fr);gap:5px}
+.opt{height:38px;border:1.5px solid var(--bd);border-radius:10px;background:var(--pad);color:var(--fg);font:inherit;font-size:15px;touch-action:manipulation}
 .opt.sel{background:var(--ac);color:var(--acfg);border-color:var(--ac)}
-.mode{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0 12px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-button.pad{height:min(17vh,120px);min-height:88px;border:1.5px solid var(--bd);border-radius:14px;background:var(--pad);color:var(--fg);display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;padding:10px 14px;font:inherit;touch-action:manipulation;user-select:none}
-button.pad .n{font-size:30px;font-weight:700}
-button.pad .d{font-size:13px;color:var(--mut)}
+.mode{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:6px 0 8px}
+.info{position:sticky;top:0;z-index:2;margin:0 0 6px;padding:8px 12px;border:1.5px solid var(--bd);border-radius:12px;background:var(--bg)}
+.info b{font-size:11px;color:var(--mut);font-weight:500;margin-right:8px}
+#notes{font-size:16px;font-weight:600}
+h2.sec{margin:14px 2px 4px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--ac)}
+.cap{margin:6px 2px 2px;font-size:11px;color:var(--mut)}
+.row{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+button.pad,.empty{height:46px;border-radius:8px;min-width:0}
+button.pad{border:1.5px solid var(--bd);background:var(--pad);color:var(--fg);font:inherit;font-size:13px;font-weight:600;padding:0 1px;touch-action:manipulation;user-select:none;white-space:nowrap}
+button.pad.sm{font-size:10.5px}
 button.pad.tonic{border-color:var(--ac)}
 button.pad:active,button.pad.on{background:var(--ac);color:var(--acfg);border-color:var(--ac)}
-button.pad:active .d,button.pad.on .d{color:var(--acfg)}
-.info{margin-top:12px;padding:12px 14px;border:1.5px solid var(--bd);border-radius:14px}
-.info b{display:block;font-size:13px;color:var(--mut);font-weight:500;margin-bottom:4px}
-#notes{font-size:20px;font-weight:600}
 </style></head><body><main>
 <div class="keys" id="keys"></div>
 <div class="mode" id="mode"></div>
-<div class="grid" id="grid"></div>
-<div class="info"><b>Notes (low to high)</b><div id="notes">Tap a chord</div></div>
+<div class="info"><b>Notes (low to high)</b><span id="notes">Tap a chord</span></div>
+<div id="sections"></div>
 </main>
 <script>
-// Pitch class names (flats only)
-const NM=['C','D♭','D','E♭','E','F','G♭','G','A♭','A','B♭','B'];
+// Pitch class names: key-dependent spelling (sharps or flats)
+const FLAT=['C','D♭','D','E♭','E','F','G♭','G','A♭','A','B♭','B'];
+const SHARP=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const SHARP_MAJOR_KEYS=new Set([1,2,4,6,7,9,11]); // major keys conventionally written with sharps
 const SCALES={Major:[0,2,4,5,7,9,11],Minor:[0,2,3,5,7,8,10]};
-const ROMAN=['I','II','III','IV','V','VI','VII'];
-const noteName=m=>NM[m%12]+(Math.floor(m/12)-1);
-let key=5,mode='Major',ctx=null,cur=[];
-// Build 7 diatonic triads; voicing is fixed: root position, roots ascend from the tonic
-function chords(){
-  const sc=SCALES[mode],s=sc.concat(sc.map(x=>x+12)),base=48+key;
-  return sc.map((_,d)=>{
-    const r=s[d],t=s[d+2]-r,f=s[d+4]-r;
-    let q='',rn=ROMAN[d];
-    if(t===3&&f===7){q='m';rn=rn.toLowerCase()}
-    else if(t===3&&f===6){q='dim';rn=rn.toLowerCase()+'°'}
-    else if(t===4&&f===8){q='aug';rn+='+'}
-    return{n:NM[(base+r)%12]+q,d:rn,m:[base+r,base+s[d+2],base+s[d+4]]};
-  });
+// Chord quality suffix by interval set
+const QUAL={'0,4,7':'','0,3,7':'m','0,3,6':'dim','0,4,8':'aug',
+  '0,4,7,11':'maj7','0,3,7,10':'m7','0,4,7,10':'7','0,3,6,10':'m7♭5','0,3,7,11':'m(maj7)','0,3,6,9':'dim7',
+  '0,2,7':'sus2','0,5,7':'sus4','0,5,7,10':'7sus4','0,4,7,9':'6','0,3,7,9':'m6'};
+let key=9,mode='Major',ctx=null,cur=[];
+const mod12=x=>((x%12)+12)%12;
+const names=()=>SHARP_MAJOR_KEYS.has(mode==='Major'?key:mod12(key+3))?SHARP:FLAT;
+const noteName=m=>names()[mod12(m)]+(Math.floor(m/12)-1);
+
+// Build a chord: root pitch class, interval list, optional bass pitch class
+function mk(root,iv,bass){
+  const N=names(),r=mod12(root),b=(bass==null||mod12(bass)===r)?null:mod12(bass); // bass equal to root is not a slash chord
+  const q=QUAL[iv.join(',')];
+  if(q===undefined)return null;
+  // Upper structure: root position, root in A3..G#4; bass note is played low (C2..B2)
+  const rm=57+mod12(r-57),bm=36+mod12((b==null?r:b)-36);
+  return{n:N[r]+q+(b!=null?'/'+N[b]:''),sig:r+':'+iv.join(',')+':'+(b==null?'':b),
+         m:[bm].concat(iv.map(i=>rm+i))};
+}
+// Diatonic info for degree d of a scale (thirds, fifths, sevenths above the root)
+function deg(scale,d){
+  const s=scale.concat(scale.map(x=>x+12)),r=s[d];
+  return{root:key+r,t:s[d+2]-r,f:s[d+4]-r,v:s[d+6]-r};
+}
+function build(){
+  const sc=SCALES[mode],alt=mode==='Major'?SCALES.Minor:SCALES.Major;
+  const seen=new Set();
+  // Add a chord to a row unless an identical chord already appears earlier (blank cell instead)
+  const cell=(c,tonic)=>{
+    if(!c||seen.has(c.sig))return null;
+    seen.add(c.sig);if(tonic)c.tonic=true;return c;
+  };
+  const row=(label,fn,scale)=>({label,cells:(scale||sc).map((_,d)=>fn(deg(scale||sc,d),d))});
+  const dom=(scale)=>mod12(key+scale[4]);
+  const fifth=x=>x.f===7;
+  return[
+    {title:'Diatonic',rows:[
+      row('Triads',(x,d)=>cell(mk(x.root,[0,x.t,x.f]),d===0)),
+      row('7th',(x,d)=>cell(mk(x.root,[0,x.t,x.f,x.v]))),
+      row('sus2',x=>fifth(x)?cell(mk(x.root,[0,2,7])):null),
+      row('sus4',x=>fifth(x)?cell(mk(x.root,[0,5,7])):null),
+      row('7sus4',x=>fifth(x)?cell(mk(x.root,[0,5,7,10])):null),
+      row('6th',x=>fifth(x)&&(x.t===3||x.t===4)?cell(mk(x.root,[0,x.t,x.f,9])):null),
+    ]},
+    {title:'Inversions / slash chords',rows:[
+      row('1st inversion (3rd in bass)',x=>cell(mk(x.root,[0,x.t,x.f],x.root+x.t))),
+      row('2nd inversion (5th in bass)',x=>cell(mk(x.root,[0,x.t,x.f],x.root+x.f))),
+      row('Triad over V bass',x=>cell(mk(x.root,[0,x.t,x.f],dom(sc)))),
+      row('7th over V bass',x=>cell(mk(x.root,[0,x.t,x.f,x.v],dom(sc)))),
+    ]},
+    {title:'Secondary dominants',rows:[
+      row('V of each degree (triad)',(x,d)=>d>0&&fifth(x)?cell(mk(x.root+7,[0,4,7])):null),
+      row('V7 of each degree',(x,d)=>d>0&&fifth(x)?cell(mk(x.root+7,[0,4,7,10])):null),
+    ]},
+    {title:'Borrowed ('+(mode==='Major'?'parallel minor':'parallel major')+')',rows:[
+      row('Triads',x=>cell(mk(x.root,[0,x.t,x.f])),alt),
+      row('7th',x=>cell(mk(x.root,[0,x.t,x.f,x.v])),alt),
+      row('6th',x=>fifth(x)&&(x.t===3||x.t===4)?cell(mk(x.root,[0,x.t,x.f,9])):null,alt),
+      row('1st inversion',x=>cell(mk(x.root,[0,x.t,x.f],x.root+x.t)),alt),
+      row('2nd inversion',x=>cell(mk(x.root,[0,x.t,x.f],x.root+x.f)),alt),
+    ]},
+  ];
 }
 function tone(m,t){
   const f=440*Math.pow(2,(m-69)/12),g=ctx.createGain();g.connect(ctx.destination);
-  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.2,t+.01);g.gain.exponentialRampToValueAtTime(.0001,t+2.4);
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.16,t+.01);g.gain.exponentialRampToValueAtTime(.0001,t+2.4);
   [[1,1],[2,.35],[3,.12]].forEach(([h,a])=>{const o=ctx.createOscillator(),q=ctx.createGain();o.frequency.value=f*h;q.gain.value=a;o.connect(q);q.connect(g);o.start(t);o.stop(t+2.5)});
   return g;
 }
@@ -61,20 +112,31 @@ function play(c,el){
   cur.forEach(g=>{try{g.gain.cancelScheduledValues(now);g.gain.setValueAtTime(g.gain.value,now);g.gain.linearRampToValueAtTime(0,now+.12)}catch(e){}});
   cur=c.m.map(m=>tone(m,now));
   document.getElementById('notes').textContent=c.n+': '+c.m.map(noteName).join(' – ');
-  document.querySelectorAll('.pad').forEach(b=>b.classList.remove('on'));el.classList.add('on');
+  document.querySelectorAll('.pad.on').forEach(b=>b.classList.remove('on'));el.classList.add('on');
 }
 function render(){
   document.querySelectorAll('#keys .opt').forEach((b,i)=>b.classList.toggle('sel',i===key));
   document.querySelectorAll('#mode .opt').forEach(b=>b.classList.toggle('sel',b.textContent===mode));
-  const grid=document.getElementById('grid');grid.innerHTML='';
-  chords().forEach((c,i)=>{
-    const b=document.createElement('button');b.className='pad'+(i===0?' tonic':'');
-    b.innerHTML='<span class="n">'+c.n+'</span><span class="d">'+c.d+'</span>';
-    b.addEventListener('pointerdown',e=>{e.preventDefault();play(c,b)});grid.appendChild(b);
+  document.querySelectorAll('#keys .opt').forEach((b,i)=>b.textContent=FLAT[i]);
+  const root=document.getElementById('sections');root.innerHTML='';
+  build().forEach(sec=>{
+    const h=document.createElement('h2');h.className='sec';h.textContent=sec.title;root.appendChild(h);
+    sec.rows.forEach(r=>{
+      const cap=document.createElement('div');cap.className='cap';cap.textContent=r.label;root.appendChild(cap);
+      const g=document.createElement('div');g.className='row';
+      r.cells.forEach(c=>{
+        if(!c){const e=document.createElement('div');e.className='empty';g.appendChild(e);return}
+        const b=document.createElement('button');
+        b.className='pad'+(c.tonic?' tonic':'')+(c.n.length>6?' sm':'');
+        b.textContent=c.n;
+        b.addEventListener('pointerdown',e=>{e.preventDefault();play(c,b)});g.appendChild(b);
+      });
+      root.appendChild(g);
+    });
   });
   document.getElementById('notes').textContent='Tap a chord';
 }
-NM.forEach((n,i)=>{const b=document.createElement('button');b.className='opt';b.textContent=n;b.onclick=()=>{key=i;render()};document.getElementById('keys').appendChild(b)});
+FLAT.forEach((n,i)=>{const b=document.createElement('button');b.className='opt';b.textContent=n;b.onclick=()=>{key=i;render()};document.getElementById('keys').appendChild(b)});
 ['Major','Minor'].forEach(m=>{const b=document.createElement('button');b.className='opt';b.textContent=m;b.onclick=()=>{mode=m;render()};document.getElementById('mode').appendChild(b)});
 render();
 </script></body></html>
