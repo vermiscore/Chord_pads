@@ -13,6 +13,9 @@ main{max-width:560px;margin:0 auto;padding:10px 8px 24px}
 .opt{height:38px;border:1.5px solid var(--bd);border-radius:10px;background:var(--pad);color:var(--fg);font:inherit;font-size:15px;touch-action:manipulation}
 .opt.sel{background:var(--ac);color:var(--acfg);border-color:var(--ac)}
 .mode{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:6px 0 8px}
+.bo{display:grid;grid-template-columns:1fr 56px 40px 56px;gap:5px;align-items:center;margin:0 0 8px;font-size:13px;color:var(--mut)}
+.bo .opt{height:34px}
+#boVal{text-align:center;color:var(--fg);font-weight:600}
 .info{position:sticky;top:0;z-index:2;margin:0 0 6px;padding:8px 12px;border:1.5px solid var(--bd);border-radius:12px;background:var(--bg)}
 .info b{font-size:11px;color:var(--mut);font-weight:500;margin-right:8px}
 #notes{font-size:16px;font-weight:600}
@@ -27,6 +30,7 @@ button.pad:active,button.pad.on{background:var(--ac);color:var(--acfg);border-co
 </style></head><body><main>
 <div class="keys" id="keys"></div>
 <div class="mode" id="mode"></div>
+<div class="bo"><span>Octave (bass + chord)</span><button class="opt" id="boDn">−</button><span id="boVal"></span><button class="opt" id="boUp">+</button></div>
 <div class="info"><b>Notes (low to high)</b><span id="notes">Tap a chord</span></div>
 <div id="sections"></div>
 </main>
@@ -50,10 +54,11 @@ function mk(root,iv,bass){
   const N=names(),r=mod12(root),b=(bass==null||mod12(bass)===r)?null:mod12(bass); // bass equal to root is not a slash chord
   const q=QUAL[iv.join(',')];
   if(q===undefined)return null;
-  // Upper structure: root position, root in A3..G#4; bass note is played low (C2..B2)
-  const rm=57+mod12(r-57),bm=36+mod12((b==null?r:b)-36);
+  // Upper structure: root position, root in A3..G#4. The bass pitch class (bp) is placed at play time
+  // so the bass octave can be adjusted.
+  const rm=57+mod12(r-57);
   return{n:N[r]+q+(b!=null?'/'+N[b]:''),sig:r+':'+iv.join(',')+':'+(b==null?'':b),
-         m:[bm].concat(iv.map(i=>rm+i))};
+         bp:(b==null?r:b),m:iv.map(i=>rm+i)};
 }
 // Diatonic info for degree d of a scale (thirds, fifths, sevenths above the root)
 function deg(scale,d){
@@ -99,19 +104,25 @@ function build(){
     ]},
   ];
 }
-function tone(m,t){
+// Bass notes get stronger upper harmonics so the pitch is audible on small phone speakers
+function tone(m,t,bass){
   const f=440*Math.pow(2,(m-69)/12),g=ctx.createGain();g.connect(ctx.destination);
-  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.16,t+.01);g.gain.exponentialRampToValueAtTime(.0001,t+2.4);
-  [[1,1],[2,.35],[3,.12]].forEach(([h,a])=>{const o=ctx.createOscillator(),q=ctx.createGain();o.frequency.value=f*h;q.gain.value=a;o.connect(q);q.connect(g);o.start(t);o.stop(t+2.5)});
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(bass?.13:.16,t+.01);g.gain.exponentialRampToValueAtTime(.0001,t+2.4);
+  (bass?[[1,1],[2,.8],[3,.5],[4,.25]]:[[1,1],[2,.35],[3,.12]]).forEach(([h,a])=>{const o=ctx.createOscillator(),q=ctx.createGain();o.frequency.value=f*h;q.gain.value=a;o.connect(q);q.connect(g);o.start(t);o.stop(t+2.5)});
   return g;
 }
+// Global octave shift applied to bass and chord together (keeps their spacing).
+// 0 = bass in C3..B3 (E3 = 165 Hz), chord root in A3..G#4
+let oct=0;
+const bassMidi=pc=>48+12*oct+mod12(pc-48);
 function play(c,el){
   if(!ctx)ctx=new(window.AudioContext||window.webkitAudioContext)();
   if(ctx.state!=='running')ctx.resume();
   const now=ctx.currentTime;
   cur.forEach(g=>{try{g.gain.cancelScheduledValues(now);g.gain.setValueAtTime(g.gain.value,now);g.gain.linearRampToValueAtTime(0,now+.12)}catch(e){}});
-  cur=c.m.map(m=>tone(m,now));
-  document.getElementById('notes').textContent=c.n+': '+c.m.map(noteName).join(' – ');
+  const bm=bassMidi(c.bp),all=[bm].concat(c.m.map(m=>m+12*oct));
+  cur=all.map((m,i)=>tone(m,now,i===0));
+  document.getElementById('notes').textContent=c.n+': '+all.map(noteName).join(' – ');
   document.querySelectorAll('.pad.on').forEach(b=>b.classList.remove('on'));el.classList.add('on');
 }
 function render(){
@@ -138,5 +149,9 @@ function render(){
 }
 FLAT.forEach((n,i)=>{const b=document.createElement('button');b.className='opt';b.textContent=n;b.onclick=()=>{key=i;render()};document.getElementById('keys').appendChild(b)});
 ['Major','Minor'].forEach(m=>{const b=document.createElement('button');b.className='opt';b.textContent=m;b.onclick=()=>{mode=m;render()};document.getElementById('mode').appendChild(b)});
+function showOct(){document.getElementById('boVal').textContent=(oct>0?'+':'')+oct}
+document.getElementById('boDn').onclick=()=>{oct=Math.max(-1,oct-1);showOct()};
+document.getElementById('boUp').onclick=()=>{oct=Math.min(2,oct+1);showOct()};
+showOct();
 render();
 </script></body></html>
