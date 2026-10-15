@@ -49,16 +49,14 @@ const mod12=x=>((x%12)+12)%12;
 const names=()=>SHARP_MAJOR_KEYS.has(mode==='Major'?key:mod12(key+3))?SHARP:FLAT;
 const noteName=m=>names()[mod12(m)]+(Math.floor(m/12)-1);
 
-// Build a chord: root pitch class, interval list, optional bass pitch class
+// Build a chord: root pitch class, interval list, optional bass pitch class.
+// Only pitch classes are stored; actual octaves are chosen at play time by voice leading.
 function mk(root,iv,bass){
   const N=names(),r=mod12(root),b=(bass==null||mod12(bass)===r)?null:mod12(bass); // bass equal to root is not a slash chord
   const q=QUAL[iv.join(',')];
   if(q===undefined)return null;
-  // Upper structure: root position, root in A3..G#4. The bass pitch class (bp) is placed at play time
-  // so the bass octave can be adjusted.
-  const rm=57+mod12(r-57);
   return{n:N[r]+q+(b!=null?'/'+N[b]:''),sig:r+':'+iv.join(',')+':'+(b==null?'':b),
-         bp:(b==null?r:b),m:iv.map(i=>rm+i)};
+         bp:(b==null?r:b),pcs:iv.map(i=>mod12(r+i))};
 }
 // Diatonic info for degree d of a scale (thirds, fifths, sevenths above the root)
 function deg(scale,d){
@@ -94,6 +92,7 @@ function build(){
     {title:'Secondary dominants',rows:[
       row('V of each degree (triad)',(x,d)=>d>0&&fifth(x)?cell(mk(x.root+7,[0,4,7])):null),
       row('V7 of each degree',(x,d)=>d>0&&fifth(x)?cell(mk(x.root+7,[0,4,7,10])):null),
+      row('V of each degree (1st inversion)',(x,d)=>d>0&&fifth(x)?cell(mk(x.root+7,[0,4,7],x.root+11)):null),
     ]},
     {title:'Borrowed ('+(mode==='Major'?'parallel minor':'parallel major')+')',rows:[
       row('Triads',x=>cell(mk(x.root,[0,x.t,x.f])),alt),
@@ -111,21 +110,58 @@ function tone(m,t,bass){
   (bass?[[1,1],[2,.8],[3,.5],[4,.25]]:[[1,1],[2,.35],[3,.12]]).forEach(([h,a])=>{const o=ctx.createOscillator(),q=ctx.createGain();o.frequency.value=f*h;q.gain.value=a;o.connect(q);q.connect(g);o.start(t);o.stop(t+2.5)});
   return g;
 }
+
+// ---- Voicing (guitar-like) ----
 // Global octave shift applied to bass and chord together (keeps their spacing).
-// 0 = bass in C3..B3 (E3 = 165 Hz), chord root in A3..G#4
 let oct=0;
-const bassMidi=pc=>48+12*oct+mod12(pc-48);
+// Voice-leading state: previous bass and upper notes (MIDI). Each new chord moves the
+// shortest way from the previous one, like a guitarist, instead of jumping to a fixed range.
+let prevBass=null,prevUp=null;
+const resetVoicing=()=>{prevBass=null;prevUp=null};
+
+// Bass in the guitar's low-string range: E2 (40) .. A3 (57).
+// First chord takes the lowest option (open-string position); later chords take the nearest
+// option, so stepwise bass lines (A-G#-F#-E, C-B-A) keep moving in the right direction.
+function pickBass(pc){
+  const lo=40+12*oct,hi=57+12*oct,c=[];
+  for(let m=lo;m<=hi;m++)if(mod12(m)===pc)c.push(m);
+  if(prevBass==null)return c[0];
+  return c.reduce((a,m)=>Math.abs(m-prevBass)<Math.abs(a-prevBass)?m:a);
+}
+// Upper voices: close position, lowest note between E3 (52) and D#4 (63), always above the bass.
+// Among all inversions, choose the one closest to the previous chord's upper voices.
+function pickUpper(pcs,bass){
+  const lo=52+12*oct,cands=[];
+  for(let s=lo;s<lo+24;s++){
+    const i=pcs.indexOf(mod12(s));if(i<0)continue;
+    const v=[s];
+    for(let k=1;k<pcs.length;k++){
+      const p=pcs[(i+k)%pcs.length];let m=v[v.length-1]+1;
+      while(mod12(m)!==p)m++;
+      v.push(m);
+    }
+    if(v[0]>bass)cands.push(v);
+    if(cands.length>=pcs.length*2)break; // enough candidates (two octaves of inversions)
+  }
+  const near=(a,b)=>a.reduce((s,m)=>s+Math.min(...b.map(p=>Math.abs(p-m))),0);
+  const cost=v=>prevUp==null?Math.abs(v[0]-(57+12*oct)):near(v,prevUp)+near(prevUp,v);
+  return cands.reduce((a,v)=>cost(v)<cost(a)?v:a);
+}
 function play(c,el){
   if(!ctx)ctx=new(window.AudioContext||window.webkitAudioContext)();
   if(ctx.state!=='running')ctx.resume();
   const now=ctx.currentTime;
   cur.forEach(g=>{try{g.gain.cancelScheduledValues(now);g.gain.setValueAtTime(g.gain.value,now);g.gain.linearRampToValueAtTime(0,now+.12)}catch(e){}});
-  const bm=bassMidi(c.bp),all=[bm].concat(c.m.map(m=>m+12*oct));
-  cur=all.map((m,i)=>tone(m,now,i===0));
+  const bm=pickBass(c.bp),up=pickUpper(c.pcs,bm);
+  prevBass=bm;prevUp=up;
+  const all=[bm].concat(up);
+  // Small delay between notes = downstroke strum
+  cur=all.map((m,i)=>tone(m,now+i*.018,i===0));
   document.getElementById('notes').textContent=c.n+': '+all.map(noteName).join(' – ');
   document.querySelectorAll('.pad.on').forEach(b=>b.classList.remove('on'));el.classList.add('on');
 }
 function render(){
+  resetVoicing();
   document.querySelectorAll('#keys .opt').forEach((b,i)=>b.classList.toggle('sel',i===key));
   document.querySelectorAll('#mode .opt').forEach(b=>b.classList.toggle('sel',b.textContent===mode));
   document.querySelectorAll('#keys .opt').forEach((b,i)=>b.textContent=FLAT[i]);
@@ -150,8 +186,8 @@ function render(){
 FLAT.forEach((n,i)=>{const b=document.createElement('button');b.className='opt';b.textContent=n;b.onclick=()=>{key=i;render()};document.getElementById('keys').appendChild(b)});
 ['Major','Minor'].forEach(m=>{const b=document.createElement('button');b.className='opt';b.textContent=m;b.onclick=()=>{mode=m;render()};document.getElementById('mode').appendChild(b)});
 function showOct(){document.getElementById('boVal').textContent=(oct>0?'+':'')+oct}
-document.getElementById('boDn').onclick=()=>{oct=Math.max(-1,oct-1);showOct()};
-document.getElementById('boUp').onclick=()=>{oct=Math.min(2,oct+1);showOct()};
+document.getElementById('boDn').onclick=()=>{oct=Math.max(-1,oct-1);resetVoicing();showOct()};
+document.getElementById('boUp').onclick=()=>{oct=Math.min(2,oct+1);resetVoicing();showOct()};
 showOct();
 render();
 </script></body></html>
