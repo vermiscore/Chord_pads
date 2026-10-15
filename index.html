@@ -30,7 +30,7 @@ button.pad.tonic{border-color:var(--ac)}
 button.pad:active,button.pad.on{background:var(--ac);color:var(--acfg);border-color:var(--ac)}
 /* Song (GP import) */
 .song{margin:0 0 10px;padding:8px;border:1.5px solid var(--bd);border-radius:12px}
-.songbar{display:grid;grid-template-columns:1fr 64px;gap:5px}
+.songbar{display:grid;grid-template-columns:64px 1fr;gap:5px}
 .songbar label.opt{display:flex;align-items:center;justify-content:center;cursor:pointer}
 .songbar input{display:none}
 #songInfo{margin:6px 2px 0}
@@ -53,16 +53,20 @@ button.pad.song{box-shadow:0 0 0 3px var(--hi)}
 </style></head><body><main>
 <section class="song">
   <div class="songbar">
-    <label class="opt">Load .gp file<input type="file" id="gpFile" accept=".gp"></label>
     <button class="opt" id="playBtn" disabled>▶</button>
+    <label class="opt">Load .gp file<input type="file" id="gpFile" accept=".gp"></label>
   </div>
   <div class="cap" id="songInfo">Guitar Pro 7/8 (.gp)</div>
   <div id="songUI" class="hide">
     <div class="songopts">
       <span>Chords from</span><select id="chordTrk"></select>
       <span>Bass from</span><select id="bassTrk"></select>
+      <span>Melody from</span><select id="melTrk"></select>
       <span>Style</span><select id="style"><option value="beat">Strum every beat</option><option value="hit">Only on chord change</option></select>
       <span>Speed</span><div class="speed"><input type="range" id="speed" min="50" max="150" step="5" value="100"><span id="speedVal">100%</span></div>
+      <span>Melody vol</span><div class="speed"><input type="range" id="volMel" min="0" max="100" value="70"><span id="volMelVal">70</span></div>
+      <span>Chord vol</span><div class="speed"><input type="range" id="volChord" min="0" max="100" value="70"><span id="volChordVal">70</span></div>
+      <span>Bass vol</span><div class="speed"><input type="range" id="volBass" min="0" max="100" value="70"><span id="volBassVal">70</span></div>
     </div>
     <div class="now"><span id="nowC">–</span><span id="nextC"></span><span id="barPos"></span></div>
     <div id="timeline"></div>
@@ -148,7 +152,7 @@ function build(){
 // Bass notes get stronger upper harmonics so the pitch is audible on small phone speakers.
 function tone(m,t,bass,vel=1){
   const f=440*Math.pow(2,(m-69)/12),g=ctx.createGain(),d=ctx.createGain();
-  g.connect(d);d.connect(ctx.destination);
+  g.connect(d);d.connect(bass?bus.bass:bus.chord);
   g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime((bass?.13:.16)*vel,t+.01);g.gain.exponentialRampToValueAtTime(.0001,t+2.4);
   (bass?[[1,1],[2,.8],[3,.5],[4,.25]]:[[1,1],[2,.35],[3,.12]]).forEach(([h,a])=>{const o=ctx.createOscillator(),q=ctx.createGain();o.frequency.value=f*h;q.gain.value=a;o.connect(q);q.connect(g);o.start(t);o.stop(t+2.5)});
   return d;
@@ -157,8 +161,35 @@ function tone(m,t,bass,vel=1){
 function damp(list,t){
   list.forEach(d=>{try{d.gain.cancelScheduledValues(t);d.gain.setValueAtTime(d.gain.value,t);d.gain.setTargetAtTime(0,t,.03)}catch(e){}});
 }
+// Melody note: soft lead voice (sine + quiet triangle) held for the note's length
+function melTone(m,t,len,vel=1){
+  const f=440*Math.pow(2,(m-69)/12),g=ctx.createGain(),d=ctx.createGain();
+  g.connect(d);d.connect(bus.mel);
+  const end=t+Math.max(len,.06);
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.2*vel,t+.02);
+  g.gain.setTargetAtTime(.14*vel,t+.02,.15);                  // settle to sustain level
+  g.gain.setTargetAtTime(0,end-.02,.05);                       // release at note end
+  [['sine',1],['triangle',.25]].forEach(([type,a])=>{
+    const o=ctx.createOscillator(),q=ctx.createGain();o.type=type;o.frequency.value=f;q.gain.value=a;
+    o.connect(q);q.connect(g);o.start(t);o.stop(end+.4);
+  });
+  return d;
+}
+// Separate output buses so melody, chords and bass have their own volume
+const bus={};
+const volOf=id=>{const v=+document.getElementById(id).value/100;return v*v};  // squared: more natural fader feel
+function applyVolumes(){
+  if(!ctx)return;
+  bus.mel.gain.setTargetAtTime(volOf('volMel')*1.4,ctx.currentTime,.02);
+  bus.chord.gain.setTargetAtTime(volOf('volChord')*2,ctx.currentTime,.02);
+  bus.bass.gain.setTargetAtTime(volOf('volBass')*2,ctx.currentTime,.02);
+}
 function ensureCtx(){
-  if(!ctx)ctx=new(window.AudioContext||window.webkitAudioContext)();
+  if(!ctx){
+    ctx=new(window.AudioContext||window.webkitAudioContext)();
+    ['mel','chord','bass'].forEach(k=>{bus[k]=ctx.createGain();bus[k].connect(ctx.destination)});
+    applyVolumes();
+  }
   if(ctx.state!=='running')ctx.resume();
 }
 
@@ -345,9 +376,13 @@ function parseGpif(xml){
       type:txt(t,'InstrumentSet','Type')||'',diag};
   });
 
-  // Walk one track: note events {s,d,m} (absolute quarter time) and chord labels {mi,pos,label}
+  // Walk one track: note events {s,d,m,mi,pos} (s = absolute quarter time in score order)
+  // and chord labels {mi,pos,label}. A tied note extends the note it continues instead of
+  // starting a new one, so held melody notes are not re-attacked.
+  const cache={};
   function walk(ti){
-    const ev=[],labels=[];
+    if(cache[ti])return cache[ti];
+    const ev=[],labels=[],open={};   // open: midi -> last event (for ties)
     mbs.forEach((mb,mi)=>{
       const bar=bars[mb.barIds[ti]];if(!bar)return;
       (txt(bar,'Voices')||'').split(/\s+/).forEach(vid=>{
@@ -359,12 +394,18 @@ function parseGpif(xml){
           const ch=txt(b,'Chord');
           if(ch!=null&&tracks[ti].diag[ch])labels.push({mi,pos,label:tracks[ti].diag[ch]});
           const ns=txt(b,'Notes');
-          if(ns)ns.split(/\s+/).forEach(nid=>{const m=notes[nid]&&noteMidi(nid);if(m!=null)ev.push({s:mb.start+pos,d:Math.max(d,.125),m})});
+          if(ns)ns.split(/\s+/).forEach(nid=>{
+            const m=notes[nid]&&noteMidi(nid);if(m==null)return;
+            const tie=kid(notes[nid],'Tie'),s=mb.start+pos,len=Math.max(d,.125);
+            const p=open[m];
+            if(tie&&tie.getAttribute('destination')==='true'&&p&&Math.abs(p.s+p.d-s)<.01){p.d+=len;return}
+            const e={s,d:len,m,mi,pos};ev.push(e);open[m]=e;
+          });
           pos+=d;
         });
       });
     });
-    return{ev,labels};
+    return cache[ti]={ev,labels};
   }
   return{title:txt(kid(root,'Score'),'Title'),artist:txt(kid(root,'Score'),'Artist'),tracks,mbs,walk};
 }
@@ -458,10 +499,14 @@ function playOrder(mbs){
 let gp=null,song=null;
 function buildSong(){
   const order=playOrder(gp.mbs);
-  const chips=[],beatsT=[];let t=0;
+  const chips=[],beatsT=[],mel=[];let t=0;
+  // Melody notes grouped by bar, placed in play order below
+  const melTi=+$('melTrk').value,melByBar={};
+  if(melTi>=0)gp.walk(melTi).ev.forEach(e=>(melByBar[e.mi]=melByBar[e.mi]||[]).push(e));
   order.forEach((mi,k)=>{
     const mb=gp.mbs[mi],spq=60/mb.bpm;
     for(let q=0;q<mb.len;q++)beatsT.push(t+q*spq);
+    (melByBar[mi]||[]).forEach(e=>mel.push({t:t+e.pos*spq,len:e.d*spq,m:e.m}));
     mb.segs.forEach(s=>{
       const last=chips[chips.length-1];
       if(last&&last.c.sig===s.c.sig)return;          // same chord continues across the bar line
@@ -472,7 +517,8 @@ function buildSong(){
     t+=mb.len*spq;
   });
   chips.forEach((c,i)=>c.end=i+1<chips.length?chips[i+1].t:t);
-  song={chips,beatsT,total:t};
+  mel.sort((a,b)=>a.t-b.t);
+  song={chips,beatsT,mel,total:t};
 }
 // Guess the key from the most-played major/minor chord (by duration)
 function guessKey(){
@@ -520,7 +566,7 @@ function showChip(i){
 }
 
 // ---- Player: look-ahead scheduler on the Web Audio clock ----
-const player={on:false,chip:-1,timer:0,raf:0,ctx0:0,from:0,speed:1,events:[],ei:0,voiced:-1,notes:[],gains:[]};
+const player={on:false,chip:-1,timer:0,raf:0,ctx0:0,from:0,speed:1,events:[],ei:0,voiced:-1,notes:[],gains:[],mi:0,melGains:[]};
 // Events in song seconds: every chord change (accent) and, in beat style, every beat
 function buildEvents(from){
   const style=$('style').value,ev=[];
@@ -542,6 +588,13 @@ function schedule(){
     damp(player.gains,t);
     player.gains=strum(player.notes,t,e.acc?1:.6);
   }
+  // Melody notes (only the recent ones are kept for stopping; older ones have ended)
+  const mel=song.mel;
+  while(player.mi<mel.length&&mel[player.mi].t<=horizon){
+    const n=mel[player.mi++];
+    player.melGains.push(melTone(n.m,toCtx(n.t),n.len/player.speed));
+    if(player.melGains.length>64)player.melGains.shift();
+  }
 }
 function frame(){
   if(!player.on)return;
@@ -560,13 +613,14 @@ function startPlay(from){
   resetVoicing();
   player.on=true;player.from=from;player.speed=+$('speed').value/100;
   player.ctx0=ctx.currentTime+.08;player.events=buildEvents(from);player.ei=0;player.voiced=-1;player.chip=-1;
+  player.mi=0;while(player.mi<song.mel.length&&song.mel[player.mi].t<from-1e-6)player.mi++;
   player.timer=setInterval(schedule,25);schedule();
   player.raf=requestAnimationFrame(frame);
   $('playBtn').textContent='■';
 }
 function stopPlay(keepUi){
-  if(player.on){clearInterval(player.timer);cancelAnimationFrame(player.raf);if(ctx)damp(player.gains,ctx.currentTime)}
-  player.on=false;player.gains=[];
+  if(player.on){clearInterval(player.timer);cancelAnimationFrame(player.raf);if(ctx){damp(player.gains,ctx.currentTime);damp(player.melGains,ctx.currentTime)}}
+  player.on=false;player.gains=[];player.melGains=[];
   if(!keepUi){$('playBtn').textContent='▶'}
 }
 // Restart from the current position when a setting that affects scheduling changes
@@ -586,6 +640,10 @@ function fillTrackSelects(){
   const bass=usable.find(t=>/bass/i.test(t.type+' '+t.name));
   $('bassTrk').innerHTML='<option value="-1">Lowest note of chord track</option>'+usable.map(opt).join('');
   $('bassTrk').value=bass?bass.i:-1;
+  // Default melody: vocal track, else a "lead" track that is not the chord source
+  const vocal=usable.find(t=>/vocal|voice|melody/i.test(t.name))||usable.find(t=>/lead/i.test(t.name)&&t!==def);
+  $('melTrk').innerHTML='<option value="-1">None</option>'+usable.map(opt).join('');
+  $('melTrk').value=vocal?vocal.i:-1;
 }
 function analyzeAndShow(first){
   stopPlay();
@@ -613,7 +671,10 @@ $('gpFile').addEventListener('change',async e=>{
   e.target.value='';
 });
 $('playBtn').onclick=()=>player.on?stopPlay():startPlay(player.chip>=0&&song.chips[player.chip]?song.chips[player.chip].t:0);
-$('chordTrk').onchange=$('bassTrk').onchange=()=>analyzeAndShow(false);
+$('chordTrk').onchange=$('bassTrk').onchange=$('melTrk').onchange=()=>analyzeAndShow(false);
+['volMel','volChord','volBass'].forEach(id=>{
+  $(id).oninput=()=>{$(id+'Val').textContent=$(id).value;applyVolumes()};
+});
 $('style').onchange=restartIfPlaying;
 $('speed').oninput=()=>{$('speedVal').textContent=$('speed').value+'%'};
 $('speed').onchange=restartIfPlaying;
