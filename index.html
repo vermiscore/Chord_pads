@@ -640,11 +640,13 @@ function restartIfPlaying(){if(player.on)startPlay(Math.max(0,songNow()))}
 function fillTrackSelects(){
   const usable=gp.tracks.filter(t=>!/drum/i.test(t.type));
   const opt=(t)=>'<option value="'+t.i+'">'+(t.i+1)+'. '+t.name.replace(/</g,'&lt;')+'</option>';
-  // Default chord source: track with chord labels, else one named "rhythm", else first guitar-like
-  const labeled=usable.find(t=>Object.keys(t.diag).length);
+  // Default chord source (its notes are used where a bar has no chord name):
+  // rhythm track, else a guitar-like track, else any track with chord labels.
+  // Chord labels are read from every track regardless of this choice.
   const rhythm=usable.find(t=>/rhythm/i.test(t.name));
-  const guitar=usable.find(t=>/guitar|ukulele/i.test(t.type));
-  const def=(labeled||rhythm||guitar||usable[0]);
+  const guitar=usable.find(t=>/guitar|ukulele|steel|banjo/i.test(t.type)&&!/vocal/i.test(t.name));
+  const labeled=usable.find(t=>Object.keys(t.diag).length);
+  const def=(rhythm||guitar||labeled||usable[0]);
   $('chordTrk').innerHTML=usable.map(opt).join('');
   $('chordTrk').value=def?def.i:'';
   const bass=usable.find(t=>/bass/i.test(t.type+' '+t.name));
